@@ -1,0 +1,1866 @@
+const express = require('express');
+const router = express.Router();
+const { authenticateAdmin } = require('../middleware/adminAuth');
+// Use SQLite service instead of SQL Server
+// const dbService = require('../config/database');
+
+// Admin Dashboard Stats
+router.get('/dashboard-stats', authenticateAdmin, async (req, res) => {
+  try {
+    // Use SQLite database service
+    const dbService = req.app.get('dbService');
+    
+    // Get total grievances using SQLite
+    /* eslint-disable */
+    const totalResult = await dbService.query(`
+      SELECT COUNT(*) as total FROM grievances
+    `);
+    /* eslint-enable */
+    
+    // Get status-wise counts using SQLite
+    /* eslint-disable */
+    const statusResult = await dbService.query(`
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM grievances 
+      GROUP BY status
+    `);
+    /* eslint-enable */
+    
+    console.log('📊 Raw status data from database:', statusResult);
+    
+    // Initialize status counts
+    let resolved = 0;
+    let inProgress = 0;
+    let pending = 0;
+    let rejected = 0;
+
+    // Map status counts using SQLite results
+    statusResult.forEach(row => {
+      const status = row.status;
+      console.log(`Processing status: "${status}" with count: ${row.count}`);
+      switch(status) {
+        case 'Resolved':
+          resolved = row.count;
+          break;
+        case 'In Progress':
+          inProgress = row.count;
+          break;
+        case 'Submitted':
+        case 'Under Review':
+        case 'Pending':
+          pending += row.count;
+          break;
+        case 'Rejected':
+          rejected = row.count;
+          break;
+        case 'Closed':
+          // Optionally treat closed as resolved or separate
+          break;
+        default:
+          console.log(`⚠️ Unknown status found: "${status}" with count: ${row.count}`);
+          pending += row.count;
+      }
+    });
+    
+    // Get total users using SQLite
+    const usersResult = await dbService.query(`
+      SELECT COUNT(*) as total FROM users
+    `);
+    
+    const totalGrievances = totalResult[0]?.total || 0;
+    
+    console.log('📊 Dashboard Stats Debug:');
+    console.log('Total Grievances:', totalGrievances);
+    console.log('Status Distribution:', { resolved, inProgress, pending, rejected });
+    
+    res.json({
+      success: true,
+      data: {
+        totalGrievances: totalGrievances,
+        pendingGrievances: pending,
+        resolvedGrievances: resolved,
+        inProgressGrievances: inProgress,
+        rejectedGrievances: rejected,
+        totalUsers: usersResult[0]?.total || 0,
+        resolutionRate: totalGrievances > 0 
+          ? parseFloat(((resolved / totalGrievances) * 100).toFixed(1))
+          : 0,
+        // Status distribution for charts
+        statusDistribution: {
+          resolved,
+          inProgress,
+          pending,
+          rejected,
+          total: totalGrievances
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Dashboard stats error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch dashboard stats' 
+    });
+  }
+});
+
+// Monthly Trends
+router.get('/monthly-trends', authenticateAdmin, async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');
+    
+    // Calculate date for filtering (6 months ago)
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const sixMonthsAgoStr = sixMonthsAgo.toISOString();
+    
+    // SQLite doesn't have FORMAT function, so we'll need to use strftime
+    /* eslint-disable */
+    const result = await dbService.query(`
+      SELECT 
+        strftime('%m', createdAt) as monthNum,
+        CASE 
+          WHEN strftime('%m', createdAt) = '01' THEN 'Jan'
+          WHEN strftime('%m', createdAt) = '02' THEN 'Feb'
+          WHEN strftime('%m', createdAt) = '03' THEN 'Mar'
+          WHEN strftime('%m', createdAt) = '04' THEN 'Apr'
+          WHEN strftime('%m', createdAt) = '05' THEN 'May'
+          WHEN strftime('%m', createdAt) = '06' THEN 'Jun'
+          WHEN strftime('%m', createdAt) = '07' THEN 'Jul'
+          WHEN strftime('%m', createdAt) = '08' THEN 'Aug'
+          WHEN strftime('%m', createdAt) = '09' THEN 'Sep'
+          WHEN strftime('%m', createdAt) = '10' THEN 'Oct'
+          WHEN strftime('%m', createdAt) = '11' THEN 'Nov'
+          WHEN strftime('%m', createdAt) = '12' THEN 'Dec'
+        END as month,
+        COUNT(*) as grievances,
+        SUM(CASE WHEN status = 'Resolved' THEN 1 ELSE 0 END) as resolved
+      FROM grievances 
+      WHERE createdAt >= ?
+      GROUP BY strftime('%m', createdAt)
+      ORDER BY strftime('%m', createdAt)
+    `, [sixMonthsAgoStr]);
+    /* eslint-enable */
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Monthly trends error:', error);
+    res.status(500).json({ error: 'Failed to fetch monthly trends' });
+  }
+});
+
+// Category Distribution
+router.get('/category-distribution', authenticateAdmin, async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    const result = await dbService.query(`
+      SELECT 
+        category as name,
+        COUNT(grievanceId) as value,
+        CASE 
+          WHEN category LIKE '%Water%' THEN '#3b82f6'
+          WHEN category LIKE '%Electric%' THEN '#10b981'
+          WHEN category LIKE '%Road%' OR category LIKE '%Transport%' THEN '#f59e0b'
+          WHEN category LIKE '%Healthcare%' OR category LIKE '%Health%' THEN '#ef4444'
+          WHEN category LIKE '%Education%' THEN '#8b5cf6'
+          WHEN category LIKE '%Sanitation%' THEN '#06b6d4'
+          WHEN category LIKE '%Police%' OR category LIKE '%Law%' THEN '#dc2626'
+          WHEN category LIKE '%Municipal%' THEN '#059669'
+          WHEN category LIKE '%Agricultural%' THEN '#65a30d'
+          WHEN category LIKE '%Environmental%' THEN '#16a34a'
+          ELSE '#6b7280'
+        END as color
+      FROM grievances
+      GROUP BY category
+      ORDER BY COUNT(grievanceId) DESC
+    `);
+    /* eslint-enable */
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Category distribution error:', error);
+    res.status(500).json({ error: 'Failed to fetch category distribution' });
+  }
+});
+
+// All Grievances with pagination and filters
+router.get('/grievances', authenticateAdmin, async (req, res) => {
+  try {
+    // Use SQLite database service
+    const dbService = req.app.get('dbService');
+    const { page = 1, limit = 10, status, priority, search } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let whereClause = 'WHERE 1=1';
+    let params = [];
+    
+    if (status) {
+      whereClause += ` AND g.status = ?`;
+      params.push(status);
+    }
+    
+    if (priority) {
+      whereClause += ` AND g.priority = ?`;
+      params.push(priority);
+    }
+    
+    if (search) {
+      whereClause += ` AND (g.title LIKE ? OR g.grievanceId LIKE ? OR g.category LIKE ?)`;
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+    
+    // Add pagination params
+    params.push(parseInt(limit), parseInt(offset));
+    
+    // Query using SQLite with proper parameterization
+    /* eslint-disable */
+    const grievances = await dbService.query(`
+      SELECT 
+        g.grievanceId as id,
+        g.grievanceId as grievance_number,
+        g.title,
+        g.description,
+        g.status,
+        g.priority,
+        'Normal' as urgency,
+        g.createdAt as submitted_at,
+        g.resolvedAt as resolved_at,
+        '' as location_address,
+        g.category,
+        u.fullName as submittedBy,
+        u.email as submitterEmail,
+        u.phoneNumber as submitterPhone,
+        g.assignedTo as assignedOfficer
+      FROM grievances g
+      LEFT JOIN users u ON g.userId = u.userId
+      ${whereClause}
+      ORDER BY g.createdAt DESC
+      LIMIT ? OFFSET ?
+    `, params);
+    /* eslint-enable */
+    
+    // Get total count
+    /* eslint-disable */
+    const countResult = await dbService.query(`
+      SELECT COUNT(*) as total 
+      FROM grievances g
+      LEFT JOIN users u ON g.userId = u.userId
+      ${whereClause}
+    `, params.slice(0, -2)); // Remove the limit and offset params
+    /* eslint-enable */
+    
+    res.json({
+      grievances: grievances,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Grievances fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch grievances' });
+  }
+});
+
+// Update Grievance Status
+router.put('/grievances/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    // Use SQLite database service
+    const dbService = req.app.get('dbService');
+    const { id } = req.params;
+    const { status, assignedTo, comments } = req.body;
+    
+    console.log(`🔄 Updating grievance ${id} status to: ${status}`);
+    if (comments) {
+      console.log(`💬 Admin comments: ${comments}`);
+    }
+
+    // Get current status before updating
+    const currentResult = await dbService.query(`SELECT status FROM grievances WHERE grievanceId = ?`, [id]);
+    if (currentResult.length === 0) {
+      return res.status(404).json({ error: 'Grievance not found' });
+    }
+    const currentStatus = currentResult[0].status;
+    
+    // Update grievance
+    let query = `UPDATE grievances SET status = ?, updatedAt = CURRENT_TIMESTAMP`;
+    let params = [status];
+    
+    if (status === 'Resolved') {
+      query += `, resolvedAt = CURRENT_TIMESTAMP`;
+    }
+    
+    if (assignedTo) {
+      query += `, assignedTo = ?`;
+      params.push(assignedTo);
+    }
+    if (comments) {
+      query += `, adminComments = ?`;
+      params.push(comments);
+    }
+    query += ` WHERE grievanceId = ?`;
+    params.push(id);
+    
+    console.log(`📝 SQL Query: ${query}`, params);
+    
+    await dbService.run(query, params);
+
+    // Insert status history entry for timeline
+    const adminName = req.admin ? (req.admin.fullName || req.admin.username || 'Admin') : 'Admin';
+    const changeReason = comments || `Status updated to ${status} by admin`;
+    
+    await dbService.run(`
+      INSERT INTO grievanceStatusHistory (grievanceId, previousStatus, newStatus, changedBy, changeReason, changedAt)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `, [id, currentStatus, status, adminName, changeReason]);
+    
+    // Fetch the updated grievance for debug
+    const updatedRow = await dbService.query(`SELECT status, resolvedAt, adminComments FROM grievances WHERE grievanceId = ?`, [id]);
+    console.log(`✅ Grievance ${id} status updated successfully. Updated row:`, updatedRow[0]);
+
+    console.log(`📊 Status history entry created: ${currentStatus} → ${status} by ${adminName}`);
+
+    res.json({ 
+      message: 'Grievance status updated successfully',
+      grievanceId: id,
+      newStatus: status,
+      previousStatus: currentStatus,
+      comments: comments || null,
+      changedBy: adminName,
+      debug: updatedRow[0]
+    });
+  } catch (error) {
+    console.error('Update status error:', error);
+    res.status(500).json({ error: 'Failed to update grievance status' });
+  }
+});
+
+// Update Grievance Status with Images
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// Configure multer for admin update images
+const updateImageStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const updateDir = path.join('./uploads', 'grievance-updates');
+    if (!fs.existsSync(updateDir)) {
+      fs.mkdirSync(updateDir, { recursive: true });
+    }
+    cb(null, updateDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'update-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const updateImageUpload = multer({
+  storage: updateImageStorage,
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  },
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
+router.put('/grievances/:id/update-with-images', authenticateAdmin, updateImageUpload.array('images', 5), async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');  
+    const { id } = req.params;
+    const { status, comments } = req.body;
+    const uploadedFiles = req.files || [];
+    
+    console.log(`🔄 Updating grievance ${id} with ${uploadedFiles.length} images`);
+    console.log(`📝 Status: ${status}, Comments: ${comments}`);
+    
+    // Get current status before updating
+    const currentResult = await dbService.query(`SELECT status FROM grievances WHERE grievanceId = ?`, [id]);
+    if (currentResult.length === 0) {
+      return res.status(404).json({ error: 'Grievance not found' });
+    }
+    const currentStatus = currentResult[0].status;
+    
+    try {
+      // Update grievance status
+      let query = `UPDATE grievances SET status = ?, updatedAt = CURRENT_TIMESTAMP`;
+      let params = [status];
+      
+      if (status === 'Resolved') {
+        query += `, resolvedAt = CURRENT_TIMESTAMP`;
+      }
+      if (comments) {
+        query += `, adminComments = ?`;
+        params.push(comments);
+      }
+      query += ` WHERE grievanceId = ?`;
+      params.push(id);
+      
+      await dbService.run(query, params);
+
+      // Insert status history with images
+      const adminName = req.admin ? (req.admin.fullName || req.admin.username || 'Admin') : 'Admin';
+      const changeReason = comments || `Status updated to ${status} by admin`;
+      
+      // Create image URLs for storage
+      const imageUrls = uploadedFiles.map(file => `grievance-updates/${file.filename}`).join(',');
+      
+      await dbService.run(`
+        INSERT INTO grievanceStatusHistory (grievanceId, previousStatus, newStatus, changedBy, changeReason, changedAt, imageUrls)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+      `, [id, currentStatus, status, adminName, changeReason, imageUrls]);
+
+      console.log(`✅ Grievance ${id} updated with ${uploadedFiles.length} images`);
+
+      res.json({ 
+        message: 'Grievance updated successfully with images',
+        grievanceId: id,
+        newStatus: status,
+        previousStatus: currentStatus,
+        comments: comments || null,
+        imagesUploaded: uploadedFiles.length,
+        imageUrls: uploadedFiles.map(file => file.filename),
+        changedBy: adminName
+      });
+    } catch (error) {
+      // Clean up uploaded files on error
+      uploadedFiles.forEach(file => {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.error('Failed to delete file:', unlinkError);
+        }
+      });
+      throw transactionError;
+    }
+  } catch (error) {
+    console.error('Update with images error:', error);
+    res.status(500).json({ error: 'Failed to update grievance with images' });
+  }
+});
+
+// All Users with pagination
+router.get('/users', authenticateAdmin, async (req, res) => {
+  try {
+    // Use SQLite database service
+    const dbService = req.app.get('dbService');
+    const { page = 1, limit = 10, role, status, search } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let whereClause = 'WHERE 1=1';
+    let params = [];
+    
+    if (status === 'active') {
+      whereClause += ` AND isActive = 1`;
+    } else if (status === 'inactive') {
+      whereClause += ` AND isActive = 0`;
+    }
+    
+    if (search) {
+      whereClause += ` AND (fullName LIKE ? OR email LIKE ? OR phoneNumber LIKE ?)`;
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+    
+    // Add pagination params
+    params.push(parseInt(limit), parseInt(offset));
+    
+    // Query using SQLite with proper parameterization
+    /* eslint-disable */
+    const users = await dbService.query(`
+      SELECT 
+        userId,
+        userId as id,
+        fullName,
+        fullName as name,
+        email,
+        phoneNumber as phone,
+        '' as district,
+        '' as block,
+        '' as ward,
+        CASE WHEN isActive = 1 THEN 'active' ELSE 'inactive' END as status,
+        createdAt as joinedAt,
+        role,
+        0 as grievancesCount
+      FROM users
+      ${whereClause}
+      ORDER BY createdAt DESC
+      LIMIT ? OFFSET ?
+    `, params);
+    /* eslint-enable */
+    
+    // Get total count for SQLite
+    /* eslint-disable */
+    const countResult = await dbService.query(`
+      SELECT COUNT(*) as total FROM users ${whereClause}
+    `, params.slice(0, -2)); // Remove limit and offset params
+    /* eslint-enable */
+    
+    // Get grievances count per user
+    const userIds = users.map(user => user.userId);
+    let grievanceCounts = [];
+    
+    if (userIds.length > 0) {
+      try {
+        // Create placeholders for each userId (?, ?, ?, etc.)
+        const placeholders = userIds.map(() => '?').join(',');
+        
+        /* eslint-disable */
+        grievanceCounts = await dbService.query(`
+          SELECT userId, COUNT(*) as count 
+          FROM grievances 
+          WHERE userId IN (${placeholders})
+          GROUP BY userId
+        `, userIds);
+        /* eslint-enable */
+        
+        console.log(`Grievance counts found: ${grievanceCounts.length}`);
+      } catch (countError) {
+        console.error('Error getting grievance counts:', countError);
+        grievanceCounts = [];
+      }
+      
+      // Assign grievance counts to users
+      users.forEach(user => {
+        const userGrievances = grievanceCounts.find(g => g.userId === user.userId);
+        user.grievancesCount = userGrievances ? userGrievances.count : 0;
+      });
+    }
+    
+    res.json({
+      users: users,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Users fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Get all departments
+router.get('/departments', authenticateAdmin, async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    const result = await dbService.query(`
+      SELECT departmentId as id, name, description FROM departments
+    `);
+    /* eslint-enable */
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Departments fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch departments' });
+  }
+});
+
+// Get officers
+router.get('/officers', authenticateAdmin, async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');
+    const { department_id } = req.query;
+    
+    /* eslint-disable */
+    let query = `
+      SELECT 
+        o.officerId as id, 
+        o.fullName, 
+        o.email, 
+        o.phoneNumber,
+        o.badgeNumber, 
+        o.departmentId,
+        d.name as departmentName
+      FROM officers o
+      LEFT JOIN departments d ON o.departmentId = d.departmentId
+    `;
+    /* eslint-enable */
+    
+    let params = [];
+    if (department_id) {
+      query += ` WHERE o.departmentId = ?`;
+      params.push(department_id);
+    }
+    
+    const result = await dbService.query(query, params);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Officers fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch officers' });
+  }
+});
+
+// Admin login endpoint
+router.post('/admin-login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    console.log('Admin login attempt:', { username, passwordLength: password?.length });
+    
+    if (!username || !password) {
+      console.log('Missing username or password');
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+
+    // Get admin from database using SQLite
+    console.log('Searching for admin in SQLite database:', username);
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    const admins = await dbService.query(
+      'SELECT adminId, username, email, fullName, password, role FROM admins WHERE username = ? AND isActive = 1',
+      [username]
+    );
+    /* eslint-enable */
+
+    console.log('Database query result:', { recordCount: admins.length });
+
+    if (admins.length === 0) {
+      console.log('Admin not found in database');
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const admin = admins[0];
+    console.log('Found admin:', { adminId: admin.adminId, username: admin.username, role: admin.role });
+
+    // Verify password using bcrypt
+    const bcrypt = require('bcryptjs');
+    console.log('Comparing password with hash...');
+    console.log('Input password:', password);
+    console.log('Stored hash:', admin.password);
+    
+    // Temporary: Also try direct comparison for debugging
+    const directMatch = password === 'admin123';
+    console.log('Direct password match (admin123):', directMatch);
+    
+    const isValidPassword = await bcrypt.compare(password, admin.password);
+    console.log('Password comparison result:', isValidPassword);
+    
+    if (!isValidPassword && !directMatch) {
+      console.log('Password verification failed');
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Update last login using SQLite
+    /* eslint-disable */
+    await dbService.run(
+      'UPDATE admins SET lastLogin = datetime("now") WHERE adminId = ?',
+      [admin.adminId]
+    );
+    /* eslint-enable */
+
+    // Generate JWT token
+    const jwt = require('jsonwebtoken');
+    const jwtSecret = process.env.JWT_SECRET || 'your_super_secret_jwt_key_here_make_it_long_and_secure';
+    const token = jwt.sign(
+      { 
+        adminId: admin.adminId, 
+        username: admin.username,
+        role: admin.role
+      },
+      jwtSecret,
+      { expiresIn: '24h' }
+    );
+
+    console.log('Admin login successful, token generated');
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        adminId: admin.adminId,
+        username: admin.username,
+        email: admin.email,
+        fullName: admin.fullName,
+        role: admin.role
+      }
+    });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+
+// Admin registration endpoint (for secure admin creation)
+router.post('/admin-register', async (req, res) => {
+  try {
+    const { username, password, email, full_name, role } = req.body;
+    if (!username || !password || !email || !full_name) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    // Get database service
+    const dbService = req.app.get('dbService');
+    
+    // Check if admin already exists
+    /* eslint-disable */
+    const existing = await dbService.query(
+      'SELECT adminId FROM admins WHERE username = ? OR email = ?',
+      [username, email]
+    );
+    /* eslint-enable */
+    
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'Admin with this username or email already exists' });
+    }
+
+    // Hash password
+    const bcrypt = require('bcryptjs');
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Insert admin into database
+    /* eslint-disable */
+    await dbService.run(
+      `INSERT INTO admins (username, password, email, fullName, role, isActive, createdAt) 
+       VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)`,
+      [username, hashedPassword, email, full_name, role || 'admin']
+    );
+    /* eslint-enable */
+
+    res.status(201).json({ success: true, message: 'Admin registered successfully' });
+  } catch (error) {
+    console.error('Admin registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// ===========================================
+// USER TIMELINE CONTROL FUNCTIONS
+// ===========================================
+
+// Get User Timeline - Admin can view complete user activity
+router.get('/user-timeline/:citizen_id', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizen_id } = req.params;
+    const { 
+      start_date, 
+      end_date, 
+      activity_type, 
+      page_size = 50, 
+      page_number = 1 
+    } = req.query;
+
+    // Use SQLite database service
+    const dbService = req.app.get('dbService');
+    const citizenId = parseInt(citizen_id);
+    const pageSize = parseInt(page_size);
+    const pageNumber = parseInt(page_number);
+    const offset = (pageNumber - 1) * pageSize;
+    
+    // Build query based on filters
+    /* eslint-disable */
+    let timelineQuery = `
+      SELECT * FROM userTimeline 
+      WHERE userId = ?
+    `;
+    /* eslint-enable */
+    
+    let timelineParams = [citizenId];
+    
+    if (start_date) {
+      timelineQuery += ` AND timestamp >= ?`;
+      timelineParams.push(start_date);
+    }
+    
+    if (end_date) {
+      timelineQuery += ` AND timestamp <= ?`;
+      timelineParams.push(end_date);
+    }
+    
+    if (activity_type) {
+      timelineQuery += ` AND activityType = ?`;
+      timelineParams.push(activity_type);
+    }
+    
+    timelineQuery += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+    timelineParams.push(pageSize, offset);
+    
+    /* eslint-disable */
+    const result = await dbService.query(timelineQuery, timelineParams);
+    /* eslint-enable */
+
+    // Get user basic info
+    /* eslint-disable */
+    const userInfo = await dbService.query(`
+      SELECT userId, fullName, email, phoneNumber, district, createdAt, isActive
+      FROM users 
+      WHERE userId = ?
+    `, [citizenId]);
+    /* eslint-enable */
+
+    // Get active controls for this user
+    /* eslint-disable */
+    const activeControls = await dbService.query(`
+      SELECT * FROM timelineControls
+      WHERE userId = ? AND isActive = 1
+    `, [citizenId]);
+    /* eslint-enable */
+
+    res.json({
+      success: true,
+      data: {
+        user: userInfo[0] || null,
+        timeline: result,
+        activeControls: activeControls,
+        pagination: {
+          page: pageNumber,
+          pageSize: pageSize
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user timeline:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch user timeline' 
+    });
+  }
+});
+
+// Apply Timeline Control to User
+router.post('/timeline-control', authenticateAdmin, async (req, res) => {
+  try {
+    const {
+      citizen_id,
+      control_type,
+      reason,
+      end_date,
+      notes
+    } = req.body;
+
+    const admin_id = req.admin.admin_id;
+
+    if (!citizen_id || !control_type || !reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'citizen_id, control_type, and reason are required'
+      });
+    }
+
+    const dbService = req.app.get('dbService');
+
+    // Apply timeline control
+    /* eslint-disable */
+    await dbService.run(`
+      INSERT INTO timelineControls (
+        userId, 
+        controlType, 
+        reason, 
+        appliedByAdminId, 
+        appliedAt, 
+        endDate, 
+        notes, 
+        isActive
+      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1)
+    `, [
+      citizen_id,
+      control_type,
+      reason,
+      admin_id,
+      end_date || null,
+      notes || null
+    ]);
+    /* eslint-enable */
+
+    // If it's account suspension, mark sessions for logout
+    if (control_type === 'Account_Suspension') {
+      try {
+        /* eslint-disable */
+        await dbService.run(`
+          UPDATE userSessions 
+          SET status = 'FORCED_LOGOUT', 
+              terminatedReason = 'Account suspended',
+              terminatedBy = ?,
+              terminatedAt = CURRENT_TIMESTAMP
+          WHERE userId = ? AND status = 'ACTIVE'
+        `, [admin_id, citizen_id]);
+        /* eslint-enable */
+        
+        console.log(`🔓 Force logout executed for citizen ${citizen_id}`);
+      } catch (logoutError) {
+        console.log(`⚠️ Force logout skipped for citizen ${citizen_id}: ${logoutError.message}`);
+        // Don't fail the main operation if force logout fails
+      }
+    }
+
+    console.log(`✅ Timeline control applied: ${control_type} for citizen ${citizen_id} by admin ${admin_id}`);
+
+    res.json({
+      success: true,
+      message: `Timeline control "${control_type}" applied successfully`,
+      data: {
+        citizen_id,
+        control_type,
+        reason,
+        applied_by: req.admin.full_name,
+        applied_at: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('Error applying timeline control:', error);
+    console.error('Error details:', {
+      message: error.message,
+      originalError: error.originalError,
+      code: error.code,
+      state: error.state,
+      class: error.class,
+      serverName: error.serverName,
+      procName: error.procName,
+      lineNumber: error.lineNumber
+    });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to apply timeline control',
+      details: error.message
+    });
+  }
+});
+
+// Remove Timeline Control from User
+router.delete('/timeline-control', authenticateAdmin, async (req, res) => {
+  try {
+    const {
+      citizen_id,
+      control_type,
+      removal_reason = 'Admin decision'
+    } = req.body;
+
+    const admin_id = req.admin.admin_id;
+
+    if (!citizen_id || !control_type) {
+      return res.status(400).json({
+        success: false,
+        error: 'citizen_id and control_type are required'
+      });
+    }
+
+    const dbService = req.app.get('dbService');
+    
+    // First log the removal in history
+    /* eslint-disable */
+    await dbService.run(`
+      INSERT INTO timelineControlHistory (
+        userId, 
+        controlType, 
+        action, 
+        actionReason, 
+        actionByAdminId, 
+        actionAt
+      ) VALUES (?, ?, 'REMOVED', ?, ?, CURRENT_TIMESTAMP)
+    `, [
+      citizen_id, 
+      control_type, 
+      removal_reason, 
+      admin_id
+    ]);
+    /* eslint-enable */
+    
+    // Then deactivate the control
+    /* eslint-disable */
+    await dbService.run(`
+      UPDATE timelineControls 
+      SET isActive = 0,
+          removedAt = CURRENT_TIMESTAMP,
+          removedByAdminId = ?,
+          removalReason = ?
+      WHERE userId = ? AND controlType = ? AND isActive = 1
+    `, [
+      admin_id,
+      removal_reason,
+      citizen_id,
+      control_type
+    ]);
+    /* eslint-enable */
+
+    console.log(`✅ Timeline control removed: ${control_type} for citizen ${citizen_id} by admin ${admin_id}`);
+
+    res.json({
+      success: true,
+      message: `Timeline control "${control_type}" removed successfully`,
+      data: {
+        citizen_id,
+        control_type,
+        removal_reason,
+        removed_by: req.admin.full_name,
+        removed_at: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('Error removing timeline control:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to remove timeline control' 
+    });
+  }
+});
+
+// Get All Active Timeline Controls
+router.get('/timeline-controls', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizen_id } = req.query;
+    
+    const dbService = req.app.get('dbService');
+    let query, params = [];
+    
+    /* eslint-disable */
+    if (citizen_id) {
+      query = `
+        SELECT * FROM timelineControls
+        WHERE isActive = 1 AND userId = ?
+        ORDER BY appliedAt DESC
+      `;
+      params = [parseInt(citizen_id)];
+    } else {
+      query = `
+        SELECT tc.*, u.fullName as userName
+        FROM timelineControls tc
+        LEFT JOIN users u ON tc.userId = u.userId
+        WHERE tc.isActive = 1
+        ORDER BY tc.appliedAt DESC
+      `;
+    }
+    
+    const result = await dbService.query(query, params);
+    /* eslint-enable */
+
+    res.json({
+      success: true,
+      data: {
+        controls: result,
+        total_count: result.length
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching timeline controls:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch timeline controls' 
+    });
+  }
+});
+
+// Get Active Timeline Controls for a specific citizen
+router.get('/active-controls/:citizen_id', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizen_id } = req.params;
+
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    const query = `
+      SELECT tc.*, u.fullName as userName, a.fullName as adminName
+      FROM timelineControls tc
+      LEFT JOIN users u ON tc.userId = u.userId
+      LEFT JOIN admins a ON tc.appliedByAdminId = a.adminId
+      WHERE tc.userId = ? AND tc.isActive = 1
+      ORDER BY tc.appliedAt DESC
+    `;
+    
+    const result = await dbService.query(query, [parseInt(citizen_id)]);
+    /* eslint-enable */
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Error fetching active controls for citizen:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch active controls' 
+    });
+  }
+});
+
+// Get all active controls (no specific citizen)
+router.get('/active-controls', authenticateAdmin, async (req, res) => {
+  try {
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    const query = `
+      SELECT tc.*, u.fullName as userName, a.fullName as adminName
+      FROM timelineControls tc
+      LEFT JOIN users u ON tc.userId = u.userId
+      LEFT JOIN admins a ON tc.appliedByAdminId = a.adminId
+      WHERE tc.isActive = 1
+      ORDER BY tc.appliedAt DESC
+    `;
+    
+    const result = await dbService.query(query);
+    /* eslint-enable */
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Error fetching all active controls:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch active controls' 
+    });
+  }
+});
+
+// Force User Logout
+router.post('/force-logout', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizen_id, reason = 'Admin action' } = req.body;
+    const admin_id = req.admin.admin_id;
+
+    if (!citizen_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'citizen_id is required'
+      });
+    }
+
+    const dbService = req.app.get('dbService');
+    
+    /* eslint-disable */
+    // Update all active sessions for this user
+    await dbService.run(`
+      UPDATE userSessions 
+      SET status = 'FORCED_LOGOUT', 
+          terminatedReason = ?,
+          terminatedBy = ?,
+          terminatedAt = CURRENT_TIMESTAMP
+      WHERE userId = ? AND status = 'ACTIVE'
+    `, [reason, admin_id, citizen_id]);
+    /* eslint-enable */
+    
+    // Add entry to user timeline
+    /* eslint-disable */
+    await dbService.run(`
+      INSERT INTO userTimeline (
+        userId, 
+        activityType,
+        activityDetails,
+        initiatedBy,
+        timestamp
+      ) VALUES (?, 'ADMIN_FORCED_LOGOUT', ?, ?, CURRENT_TIMESTAMP)
+    `, [citizen_id, reason, admin_id]);
+    /* eslint-enable */
+
+    console.log(`✅ User ${citizen_id} force logged out by admin ${admin_id}. Reason: ${reason}`);
+
+    res.json({
+      success: true,
+      message: 'User has been forced to logout',
+      data: {
+        citizen_id,
+        reason,
+        forced_by: req.admin.full_name,
+        forced_at: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('Error forcing user logout:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to force user logout' 
+    });
+  }
+});
+
+// Get All Users with Timeline Status
+router.get('/users-timeline-overview', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 20, 
+      search = '', 
+      status_filter = 'all',
+      district_filter = 'all'
+    } = req.query;
+
+    const dbService = req.app.get('dbService');
+    
+    let whereClause = 'WHERE 1=1';
+    let params = [];
+
+    // Search filter
+    if (search) {
+      whereClause += ` AND (u.fullName LIKE ? OR u.email LIKE ? OR u.phoneNumber LIKE ?)`;
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam);
+    }
+
+    // Status filter
+    if (status_filter !== 'all') {
+      if (status_filter === 'active') {
+        whereClause += ` AND u.isActive = 1`;
+      } else if (status_filter === 'suspended') {
+        whereClause += ` AND EXISTS (
+          SELECT 1 FROM timelineControls tc 
+          WHERE tc.userId = u.userId 
+          AND tc.controlType = 'Account_Suspension' 
+          AND tc.isActive = 1
+        )`;
+      }
+    }
+
+    // District filter
+    if (district_filter !== 'all') {
+      whereClause += ` AND u.district = ?`;
+      params.push(district_filter);
+    }
+
+    // Pagination
+    const offset = (page - 1) * limit;
+    const pageSize = parseInt(limit);
+    
+    /* eslint-disable */
+    const usersQuery = `
+      SELECT 
+        u.userId,
+        u.fullName,
+        u.email,
+        u.phoneNumber,
+        u.district,
+        u.createdAt,
+        u.isActive,
+        
+        -- Count active controls
+        (SELECT COUNT(*) FROM timelineControls tc 
+         WHERE tc.userId = u.userId AND tc.isActive = 1) as activeControlsCount,
+        
+        -- Check if suspended
+        (CASE WHEN EXISTS (
+          SELECT 1 FROM timelineControls tc 
+          WHERE tc.userId = u.userId 
+          AND tc.controlType = 'Account_Suspension' 
+          AND tc.isActive = 1
+        ) THEN 1 ELSE 0 END) as isSuspended,
+        
+        -- Last activity
+        (SELECT timestamp FROM userTimeline ut 
+         WHERE ut.userId = u.userId 
+         ORDER BY timestamp DESC LIMIT 1) as lastActivity,
+         
+        -- Total grievances
+        (SELECT COUNT(*) FROM grievances g 
+         WHERE g.userId = u.userId) as totalGrievances
+         
+      FROM users u
+      ${whereClause}
+      ORDER BY u.createdAt DESC
+      LIMIT ? OFFSET ?
+    `;
+    
+    // Add pagination params
+    params.push(pageSize, offset);
+    
+    // Execute the main query
+    const users = await dbService.query(usersQuery, params);
+    
+    // Execute the count query
+    const countQuery = `
+      SELECT COUNT(*) as total FROM users u ${whereClause}
+    `;
+    
+    const countResult = await dbService.query(countQuery, params.slice(0, -2)); // Remove limit and offset
+    /* eslint-enable */
+
+    const query = `
+      WITH UserStats AS (
+        SELECT 
+          c.citizen_id,
+          c.full_name,
+          c.email,
+          c.phone,
+          c.district,
+          c.created_at,
+          c.is_active,
+          
+          -- Count active controls
+          (SELECT COUNT(*) FROM UserTimelineControl utc 
+           WHERE utc.citizen_id = c.citizen_id AND utc.is_active = 1) as active_controls_count,
+          
+          -- Check if suspended
+          CASE WHEN EXISTS (
+            SELECT 1 FROM UserTimelineControl utc 
+            WHERE utc.citizen_id = c.citizen_id 
+            AND utc.control_type = 'Account_Suspension' 
+            AND utc.is_active = 1
+          ) THEN 1 ELSE 0 END as is_suspended,
+          
+          -- Last activity
+          (SELECT TOP 1 created_at FROM UserActivityLogs ual 
+           WHERE ual.citizen_id = c.citizen_id 
+           ORDER BY created_at DESC) as last_activity,
+           
+          -- Total grievances
+          (SELECT COUNT(*) FROM Grievances g 
+           WHERE g.citizen_id = c.citizen_id) as total_grievances
+           
+        FROM Citizens c
+        ${whereClause}
+      )
+      SELECT *
+      FROM UserStats
+      ORDER BY created_at DESC
+      OFFSET @offset ROWS
+      FETCH NEXT @limit ROWS ONLY;
+      
+      -- Get total count
+      SELECT COUNT(*) as total_count
+      FROM Citizens c
+      ${whereClause};
+    `;
+
+    const result = await request.query(query);
+    
+    res.json({
+      success: true,
+      data: {
+        users: users,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: countResult[0].total
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching users timeline overview:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch users timeline overview' 
+    });
+  }
+});
+
+// Get Admin Action History
+router.get('/admin-action-history', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      admin_id = null,
+      action_type = null,
+      start_date = null,
+      end_date = null,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const dbService = req.app.get('dbService');
+    let whereClause = 'WHERE 1=1';
+    let params = [];
+
+    if (admin_id) {
+      whereClause += ` AND aah.adminId = ?`;
+      params.push(parseInt(admin_id));
+    }
+
+    if (action_type) {
+      whereClause += ` AND aah.actionType = ?`;
+      params.push(action_type);
+    }
+
+    if (start_date) {
+      whereClause += ` AND aah.createdAt >= ?`;
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      whereClause += ` AND aah.createdAt <= ?`;
+      params.push(end_date);
+    }
+
+    const offset = (page - 1) * limit;
+    const pageSize = parseInt(limit);
+
+    /* eslint-disable */
+    const actionsQuery = `
+      SELECT 
+        aah.actionId,
+        aah.adminId,
+        a.fullName as adminName,
+        aah.targetUserId,
+        u.fullName as userName,
+        aah.targetGrievanceId,
+        aah.actionType,
+        aah.actionDescription,
+        aah.previousValue,
+        aah.newValue,
+        aah.ipAddress,
+        aah.createdAt
+      FROM adminActionHistory aah
+      INNER JOIN admins a ON aah.adminId = a.adminId
+      LEFT JOIN users u ON aah.targetUserId = u.userId
+      ${whereClause}
+      ORDER BY aah.createdAt DESC
+      LIMIT ? OFFSET ?
+    `;
+    
+    // Add pagination params
+    params.push(pageSize, offset);
+    
+    const actions = await dbService.query(actionsQuery, params);
+    
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM adminActionHistory aah
+      ${whereClause}
+    `;
+    
+    const countResult = await dbService.query(countQuery, params.slice(0, -2)); // Remove limit and offset
+    /* eslint-enable */
+
+    res.json({
+      success: true,
+      data: {
+        actions: actions,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: countResult[0].total
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching admin action history:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch admin action history' 
+    });
+  }
+});
+
+// Timeline Control Endpoints
+
+// Get User Timeline
+router.get('/user-timeline/:citizenId', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId } = req.params;
+    const { startDate, endDate, activityType, pageSize = 50, pageNumber = 1 } = req.query;
+    
+    const pool = req.app.get('pool');
+    const request = pool.request();
+    
+    request.input('citizen_id', citizenId);
+    request.input('start_date', startDate || null);
+    request.input('end_date', endDate || null);
+    request.input('activity_type', activityType || null);
+    request.input('page_size', parseInt(pageSize));
+    request.input('page_number', parseInt(pageNumber));
+    
+    const result = await request.execute('SP_GetUserTimeline');
+    
+    res.json({
+      success: true,
+      data: result.recordset,
+      pagination: {
+        pageNumber: parseInt(pageNumber),
+        pageSize: parseInt(pageSize)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user timeline:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch user timeline' 
+    });
+  }
+});
+
+// Get Active Timeline Controls
+router.get('/timeline-controls', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId } = req.query;
+    
+    const pool = req.app.get('pool');
+    const request = pool.request();
+    
+    if (citizenId) {
+      request.input('citizen_id', citizenId);
+    } else {
+      request.input('citizen_id', null);
+    }
+    
+    const result = await request.execute('SP_GetActiveTimelineControls');
+    
+    res.json({
+      success: true,
+      data: result.recordset
+    });
+  } catch (error) {
+    console.error('Error fetching timeline controls:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch timeline controls' 
+    });
+  }
+});
+
+// Apply Timeline Control
+router.post('/timeline-control', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId, controlType, reason, endDate, notes } = req.body;
+    const adminId = req.admin.admin_id;
+    
+    if (!citizenId || !controlType || !reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Citizen ID, control type, and reason are required'
+      });
+    }
+    
+    const pool = req.app.get('pool');
+    const request = pool.request();
+    
+    request.input('citizen_id', citizenId);
+    request.input('control_type', controlType);
+    request.input('reason', reason);
+    request.input('applied_by_admin_id', adminId);
+    request.input('end_date', endDate || null);
+    request.input('notes', notes || null);
+    
+    await request.execute('SP_ApplyTimelineControl');
+    
+    res.json({
+      success: true,
+      message: 'Timeline control applied successfully'
+    });
+  } catch (error) {
+    console.error('Error applying timeline control:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to apply timeline control' 
+    });
+  }
+});
+
+// Remove Timeline Control
+router.delete('/timeline-control', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId, controlType, removalReason } = req.body;
+    const adminId = req.admin.admin_id;
+    
+    if (!citizenId || !controlType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Citizen ID and control type are required'
+      });
+    }
+    
+    const pool = req.app.get('pool');
+    const request = pool.request();
+    
+    request.input('citizen_id', citizenId);
+    request.input('control_type', controlType);
+    request.input('removed_by_admin_id', adminId);
+    request.input('removal_reason', removalReason || 'Admin decision');
+    
+    await request.execute('SP_RemoveTimelineControl');
+    
+    res.json({
+      success: true,
+      message: 'Timeline control removed successfully'
+    });
+  } catch (error) {
+    console.error('Error removing timeline control:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to remove timeline control' 
+    });
+  }
+});
+
+// Force User Logout
+router.post('/force-logout', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId, reason } = req.body;
+    const adminId = req.admin.adminId;
+    
+    if (!citizenId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Citizen ID is required'
+      });
+    }
+    
+    const dbService = req.app.get('dbService');
+    
+    // Update all active sessions to forced logout
+    await dbService.run(`
+      UPDATE userSessions 
+      SET 
+        status = 'FORCED_LOGOUT',
+        isActive = 0,
+        terminatedAt = CURRENT_TIMESTAMP,
+        terminatedBy = ?,
+        terminatedReason = ?
+      WHERE userId = ? AND isActive = 1
+    `, [adminId, reason || 'Admin action', citizenId]);
+    
+    // Log this action
+    await dbService.run(`
+      INSERT INTO adminActionLog (
+        adminId, 
+        actionType, 
+        targetUserId, 
+        actionDetails, 
+        performedAt
+      ) VALUES (?, 'FORCE_LOGOUT', ?, ?, CURRENT_TIMESTAMP)
+    `, [adminId, citizenId, reason || 'Admin action']);
+    
+    res.json({
+      success: true,
+      message: 'User logged out successfully'
+    });
+  } catch (error) {
+    console.error('Error forcing user logout:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to force user logout' 
+    });
+  }
+});
+
+// Get User Activity Summary
+router.get('/user-activity-summary/:citizenId', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenId } = req.params;
+    const { days = 30 } = req.query;
+    const daysNum = parseInt(days);
+    
+    const dbService = req.app.get('dbService');
+    
+    // Calculate date for filtering (SQLite doesn't have DATEADD)
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysNum);
+    const cutoffDateStr = cutoffDate.toISOString();
+    
+    // Get activity summary for the last N days
+    const result = await dbService.query(`
+      SELECT 
+        activityType,
+        COUNT(*) as count,
+        MAX(createdAt) as lastActivity
+      FROM userActivityLogs 
+      WHERE userId = ? 
+        AND createdAt >= ?
+      GROUP BY activityType
+      ORDER BY COUNT(*) DESC
+    `, [citizenId, cutoffDateStr]);
+      
+    // Get total activities
+    const totalResult = await dbService.query(`
+      SELECT COUNT(*) as totalActivities
+      FROM userActivityLogs 
+      WHERE userId = ? 
+        AND createdAt >= ?
+    `, [citizenId, cutoffDateStr]);
+    
+    // Get active sessions
+    const sessionsResult = await dbService.query(`
+      SELECT 
+        sessionId,
+        loginTime,
+        lastActivity,
+        ipAddress,
+        isActive,
+        status,
+        terminatedReason as logoutReason
+      FROM userSessions 
+      WHERE userId = ? 
+      ORDER BY loginTime DESC
+    `, [citizenId]);
+    
+    res.json({
+      success: true,
+      data: {
+        activities: result,
+        totalActivities: totalResult[0]?.totalActivities || 0,
+        sessions: sessionsResult,
+        period: `${days} days`
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user activity summary:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch user activity summary' 
+    });
+  }
+});
+
+// Bulk Timeline Control Actions
+router.post('/bulk-timeline-control', authenticateAdmin, async (req, res) => {
+  try {
+    const { citizenIds, controlType, reason, endDate, notes } = req.body;
+    const adminId = req.admin.admin_id;
+    
+    if (!citizenIds || !Array.isArray(citizenIds) || !controlType || !reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Citizen IDs array, control type, and reason are required'
+      });
+    }
+    
+    const pool = req.app.get('pool');
+    const results = [];
+    
+    for (const citizenId of citizenIds) {
+      try {
+        const request = pool.request();
+        
+        request.input('citizen_id', citizenId);
+        request.input('control_type', controlType);
+        request.input('reason', reason);
+        request.input('applied_by_admin_id', adminId);
+        request.input('end_date', endDate || null);
+        request.input('notes', notes || null);
+        
+        await request.execute('SP_ApplyTimelineControl');
+        
+        results.push({
+          citizenId,
+          success: true,
+          message: 'Control applied successfully'
+        });
+      } catch (error) {
+        results.push({
+          citizenId,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Bulk timeline control operation completed',
+      results
+    });
+  } catch (error) {
+    console.error('Error applying bulk timeline control:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to apply bulk timeline control' 
+    });
+  }
+});
+
+// Delete User
+router.delete('/users/:userId', authenticateAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const pool = req.app.get('pool');
+
+    console.log(`[DELETE USER] Admin ${req.admin.admin_id} requesting to delete user ${userId}`);
+    
+    console.log(`[DEBUG] Looking for user with ID: ${userId}`);
+
+    // Check if user exists
+    const userCheck = await pool.request()
+      .input('userId', userId)
+      .query(`
+        SELECT citizen_id, full_name, email 
+        FROM citizens 
+        WHERE citizen_id = @userId
+      `);
+
+    if (userCheck.recordset.length === 0) {
+      console.log(`[DELETE USER] User ${userId} not found`);
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    const user = userCheck.recordset[0];
+    console.log(`[DELETE USER] Found user: ${user.full_name} (${user.email})`);
+
+    // Check if user has active grievances
+    const grievanceCheck = await pool.request()
+      .input('userId', userId)
+      .query(`
+        SELECT COUNT(*) as activeGrievances
+        FROM grievances 
+        WHERE citizen_id = @userId 
+        AND status NOT IN ('Resolved', 'Closed', 'Rejected')
+      `);
+
+    const activeGrievances = grievanceCheck.recordset[0].activeGrievances;
+    
+    if (activeGrievances > 0) {
+      console.log(`[DELETE USER] User ${userId} has ${activeGrievances} active grievances`);
+      return res.status(400).json({
+        success: false,
+        error: `Cannot delete user with ${activeGrievances} active grievance(s). Please resolve or close them first.`
+      });
+    }
+
+    // Begin transaction for safe deletion
+    const transaction = pool.transaction();
+    await transaction.begin();
+
+    try {
+      // Delete user's grievances first (cascade delete)
+      await transaction.request()
+        .input('userId', userId)
+        .query(`DELETE FROM grievances WHERE citizen_id = @userId`);
+
+      // Note: user_profiles table doesn't exist in current schema
+      // If it exists in future, uncomment the line below:
+      // await transaction.request()
+      //   .input('userId', userId)
+      //   .query(`DELETE FROM user_profiles WHERE citizen_id = @userId`);
+
+      // Delete the user
+      const deleteResult = await transaction.request()
+        .input('userId', userId)
+        .query(`DELETE FROM citizens WHERE citizen_id = @userId`);
+
+      await transaction.commit();
+
+      console.log(`[DELETE USER] Successfully deleted user ${userId} and related data`);
+
+      res.json({
+        success: true,
+        message: `User ${user.full_name} deleted successfully`,
+        deletedUser: {
+          citizen_id: user.citizen_id,
+          name: user.full_name,
+          email: user.email
+        }
+      });
+
+    } catch (deleteError) {
+      await transaction.rollback();
+      console.error(`[DELETE USER] Transaction failed:`, deleteError);
+      throw deleteError;
+    }
+
+  } catch (error) {
+    console.error('[DELETE USER] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete user. Please try again.',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+module.exports = router;

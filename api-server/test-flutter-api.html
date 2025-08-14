@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test - Flutter Debug</title>
+</head>
+<body>
+    <h2>Flutter API Test</h2>
+    <div id="result"></div>
+    
+    <script>
+        async function testFlutterAPI() {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                resultDiv.innerHTML = '<p>🔍 Testing Flutter API connection...</p>';
+                
+                // Test the exact API call that Flutter makes
+                const response = await fetch('http://localhost:5000/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        phoneNumber: '9999987407',
+                        password: 'test123'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `
+                        <p>✅ API Working Perfect!</p>
+                        <p><strong>Status:</strong> ${response.status}</p>
+                        <p><strong>User:</strong> ${data.user?.fullName}</p>
+                        <p><strong>Success:</strong> ${data.success}</p>
+                        <p style="color: green;"><strong>Use these credentials in Flutter:</strong></p>
+                        <p><strong>Phone:</strong> 9999987407</p>
+                        <p><strong>Password:</strong> test123</p>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <p>❌ API Error:</p>
+                        <p><strong>Status:</strong> ${response.status}</p>
+                        <p><strong>Error:</strong> ${JSON.stringify(data, null, 2)}</p>
+                    `;
+                }
+                
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <p>❌ Connection Error:</p>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                    <p>Check if API server is running on port 5000</p>
+                `;
+            }
+        }
+        
+        // Run test automatically
+        testFlutterAPI();
+    </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "name": "grievance-api-server",
+  "version": "1.0.0",
+  "description": "Government Grievance Management API Server for SQL Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "setup": "node setup_database.js",
+    "test-db": "node test_db_connection.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "grievance",
+    "government",
+    "api",
+    "sql-server",
+    "flutter"
+  ],
+  "author": "Government IT Department",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-rate-limit": "^6.7.0",
+    "express-validator": "^6.15.0",
+    "firebase-admin": "^13.4.0",
+    "form-data": "^4.0.4",
+    "helmet": "^6.1.5",
+    "joi": "^17.9.2",
+    "jsonwebtoken": "^9.0.0",
+    "mssql": "^9.1.1",
+    "multer": "^1.4.4",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
